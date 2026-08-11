@@ -1,8 +1,8 @@
 {
   "functions": {
-    "api/scan.ts": { "runtime": "nodejs20.x", "maxDuration": 60 },
-    "api/deliver.ts": { "runtime": "nodejs20.x", "maxDuration": 30 },
-    "api/health.ts": { "runtime": "nodejs20.x", "maxDuration": 10 }
+    "api/scan.ts": { "maxDuration": 60 },
+    "api/deliver.ts": { "maxDuration": 30 },
+    "api/health.ts": { "maxDuration": 10 }
   },
   "trailingSlash": false
 }

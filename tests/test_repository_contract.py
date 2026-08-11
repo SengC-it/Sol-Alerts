@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
 
@@ -98,6 +99,19 @@ def test_cron_schedule_has_required_scan_minutes_and_no_literal_credential() -> 
     assert "sol-alerts-delivery" not in schedule
     assert "<long-random" not in schedule
     assert "sk-" not in schedule
+
+
+def test_vercel_functions_use_default_node_runtime_and_no_obsolete_runtime_value() -> None:
+    vercel_path = ROOT / "vercel.json"
+    config = json.loads(vercel_path.read_text(encoding="utf-8"))
+    functions = config["functions"]
+    assert set(functions) == {"api/scan.ts", "api/deliver.ts", "api/health.ts"}
+    assert [functions[path]["maxDuration"] for path in sorted(functions)] == [30, 10, 60]
+    assert all("runtime" not in settings for settings in functions.values())
+    assert "nodejs20.x" not in vercel_path.read_text(encoding="utf-8")
+
+    package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    assert package["engines"]["node"] == ">=20.0.0"
 
 
 def test_transaction_contract_covers_rearm_simulation_capacity_and_delivery_attempts() -> None:
