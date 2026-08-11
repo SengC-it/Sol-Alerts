@@ -1,5 +1,6 @@
 {
   "framework": null,
+  "outputDirectory": "public",
   "functions": {
     "api/scan.ts": { "maxDuration": 60 },
     "api/deliver.ts": { "maxDuration": 30 },

@@ -105,6 +105,11 @@ def test_vercel_functions_use_default_node_runtime_and_no_obsolete_runtime_value
     vercel_path = ROOT / "vercel.json"
     config = json.loads(vercel_path.read_text(encoding="utf-8"))
     assert "framework" in config and config["framework"] is None
+    assert config["outputDirectory"] == "public"
+    public_index = ROOT / "public" / "index.html"
+    assert public_index.is_file()
+    assert "Sol Alerts API" in public_index.read_text(encoding="utf-8")
+    assert not any(path.name in {"dist", "src", "python"} for path in (ROOT / "public").iterdir())
     functions = config["functions"]
     assert set(functions) == {"api/scan.ts", "api/deliver.ts", "api/health.ts"}
     assert [functions[path]["maxDuration"] for path in sorted(functions)] == [30, 10, 60]
