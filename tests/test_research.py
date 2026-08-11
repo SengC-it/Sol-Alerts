@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+import gzip
 import json
 from pathlib import Path
 
@@ -9,7 +10,8 @@ import pytest
 
 from sol_alerts.backtest import _parameter_keys, run_backtest
 from sol_alerts.config import load_config
-from sol_alerts.bootstrap import build_risk_state
+from sol_alerts import bootstrap
+from sol_alerts.bootstrap import baseline_window, build_official_risk_state, build_risk_state, select_risk_universe, validate_baseline_candles
 from sol_alerts.data import Instrument, eligibility, ordered_split
 from sol_alerts.features import ema, state
 from sol_alerts.fixtures import synthetic_candles
@@ -126,6 +128,151 @@ def test_risk_bootstrap_is_seeded_and_perpetual_delivery_metadata_is_not_a_gate(
     assert len(state["eligibleMarketReturns"]) == 8_640
     instrument = Instrument("BTCUSDT", delivery_time=4_133_404_800_000)
     assert eligibility(instrument, 365, 20_000_000, 5, 200_000, config)["formal_eligible"] is True
+
+
+def _risk_instrument(symbol: str, first_open: int, **overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "symbol": symbol,
+        "quoteAsset": "USDT",
+        "marginAsset": "USDT",
+        "contractType": "PERPETUAL",
+        "status": "TRADING",
+        "onboardDate": first_open - 1,
+        "deliveryDate": 4_133_404_800_000,
+    }
+    row.update(overrides)
+    return row
+
+
+def _risk_ticker(symbol: str, quote_volume: float = 25_000_000, bid: float = 100.0, ask: float = 100.05) -> dict[str, object]:
+    return {"symbol": symbol, "quoteVolume": str(quote_volume), "bidPrice": str(bid), "askPrice": str(ask)}
+
+
+def test_official_risk_universe_uses_live_static_gates_and_ignores_delivery_date() -> None:
+    config = load_config()
+    cutoff = 10_000 * bootstrap.INTERVAL_MS + bootstrap.INTERVAL_MS - 1
+    first_open, _ = baseline_window(cutoff)
+    exchange_info = {
+        "symbols": [
+            _risk_instrument("BTCUSDT", first_open),
+            _risk_instrument("ETHUSDT", first_open),
+            _risk_instrument("NEWUSDT", first_open + bootstrap.INTERVAL_MS),
+            _risk_instrument("USDCUSDT", first_open, quoteAsset="USDC", marginAsset="USDC"),
+            _risk_instrument("LOWUSDT", first_open),
+            _risk_instrument("WIDEUSDT", first_open),
+        ]
+    }
+    tickers = [
+        _risk_ticker("BTCUSDT"),
+        _risk_ticker("ETHUSDT", 20_000_000),
+        _risk_ticker("LOWUSDT", 19_999_999),
+        _risk_ticker("WIDEUSDT", 30_000_000, 100.0, 100.3),
+    ]
+    assert select_risk_universe(exchange_info, tickers, cutoff, config) == ["BTCUSDT", "ETHUSDT"]
+
+
+def test_risk_baseline_rejects_late_or_misaligned_closed_candles() -> None:
+    first_open = 1_360 * bootstrap.INTERVAL_MS
+    end_ms = first_open + (bootstrap.RISK_CANDLE_COUNT - 1) * bootstrap.INTERVAL_MS + bootstrap.INTERVAL_MS - 1
+    candles = synthetic_candles("BTCUSDT", bootstrap.RISK_CANDLE_COUNT, first_open)
+    validate_baseline_candles("BTCUSDT", candles, first_open, end_ms)
+    with pytest.raises(ValueError, match="incomplete, misaligned"):
+        validate_baseline_candles("BTCUSDT", [*candles[:-1], replace(candles[-1], close_time=candles[-1].close_time + 1)], first_open, end_ms)
+    with pytest.raises(ValueError, match="incomplete, misaligned"):
+        validate_baseline_candles("BTCUSDT", [*candles[:20], replace(candles[20], open_time=candles[20].open_time + 1), *candles[21:]], first_open, end_ms)
+
+
+def test_official_risk_download_aligns_all_symbols_and_uses_market_median(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = load_config()
+    cutoff = 10_000 * bootstrap.INTERVAL_MS + bootstrap.INTERVAL_MS - 1
+    first_open, _ = baseline_window(cutoff)
+    exchange_info = {"symbols": [_risk_instrument("BTCUSDT", first_open), _risk_instrument("ETHUSDT", first_open)]}
+    monkeypatch.setattr(bootstrap, "fetch_exchange_info", lambda _base_url: exchange_info)
+    monkeypatch.setattr(bootstrap, "fetch_24h_tickers", lambda _base_url: [_risk_ticker("BTCUSDT"), _risk_ticker("ETHUSDT")])
+    calls: list[str] = []
+
+    def fake_download(symbol: str, start_ms: int, end_ms: int, output: Path, **_kwargs: object) -> int:
+        calls.append(symbol)
+        assert start_ms == first_open
+        assert end_ms == cutoff
+        candles = synthetic_candles(symbol, bootstrap.RISK_CANDLE_COUNT, first_open)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(output, "wt", encoding="utf-8") as handle:
+            for candle in candles:
+                handle.write(json.dumps([candle.open_time, str(candle.open), str(candle.high), str(candle.low), str(candle.close), str(candle.volume), candle.close_time, str(candle.quote_volume), "1"]) + "\n")
+        return len(candles)
+
+    monkeypatch.setattr(bootstrap, "download_klines", fake_download)
+    state, symbols = build_official_risk_state(tmp_path, cutoff, config=config)
+    assert symbols == ["BTCUSDT", "ETHUSDT"]
+    assert calls == symbols
+    assert len(state["btcReturns"]) == bootstrap.OBSERVATIONS
+    assert len(state["eligibleMarketReturns"]) == bootstrap.OBSERVATIONS
+    assert state["eligibleMarketReturns"] != state["btcReturns"]
+    assert set(state["returnsBySymbol"]) == set(symbols)
+
+
+def test_official_risk_builder_fails_closed_on_one_incomplete_symbol(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cutoff = 10_000 * bootstrap.INTERVAL_MS + bootstrap.INTERVAL_MS - 1
+    first_open, _ = baseline_window(cutoff)
+    monkeypatch.setattr(bootstrap, "fetch_exchange_info", lambda _base_url: {"symbols": [_risk_instrument("BTCUSDT", first_open), _risk_instrument("ETHUSDT", first_open)]})
+    monkeypatch.setattr(bootstrap, "fetch_24h_tickers", lambda _base_url: [_risk_ticker("BTCUSDT"), _risk_ticker("ETHUSDT")])
+
+    def incomplete_download(symbol: str, _start_ms: int, _end_ms: int, output: Path, **_kwargs: object) -> int:
+        candles = synthetic_candles(symbol, bootstrap.RISK_CANDLE_COUNT - (1 if symbol == "ETHUSDT" else 0), first_open)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(output, "wt", encoding="utf-8") as handle:
+            for candle in candles:
+                handle.write(json.dumps([candle.open_time, str(candle.open), str(candle.high), str(candle.low), str(candle.close), str(candle.volume), candle.close_time, str(candle.quote_volume), "1"]) + "\n")
+        return len(candles)
+
+    monkeypatch.setattr(bootstrap, "download_klines", incomplete_download)
+    with pytest.raises(ValueError, match="exactly 8641"):
+        build_official_risk_state(tmp_path, cutoff)
+
+
+def test_risk_publish_uses_secret_key_header_mode_and_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[object] = []
+
+    class Response:
+        status = 204
+
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    def fake_open(request: object, **_kwargs: object) -> Response:
+        captured.append(request)
+        return Response()
+
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "sb_secret_test_key")
+    bootstrap.publish_risk_state({"baselineVersion": "risk-v1"}, fake_open)
+    secret_request = captured[-1]
+    secret_headers = {name.lower(): value for name, value in secret_request.header_items()}  # type: ignore[union-attr]
+    assert secret_headers["apikey"] == "sb_secret_test_key"
+    assert "authorization" not in secret_headers
+
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "legacy-jwt-key")
+    bootstrap.publish_risk_state({"baselineVersion": "risk-v1"}, fake_open)
+    legacy_headers = {name.lower(): value for name, value in captured[-1].header_items()}  # type: ignore[union-attr]
+    assert legacy_headers["apikey"] == "legacy-jwt-key"
+    assert legacy_headers["authorization"] == "Bearer legacy-jwt-key"
+
+    monkeypatch.delenv("SUPABASE_URL")
+    with pytest.raises(RuntimeError, match="requires SUPABASE_URL"):
+        bootstrap.publish_risk_state({"baselineVersion": "risk-v1"}, fake_open)
+
+
+def test_risk_bootstrap_workflow_is_manual_and_never_fixture_or_cron_mode() -> None:
+    workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "bootstrap-risk.yml").read_text(encoding="utf-8")
+    assert "workflow_dispatch:" in workflow
+    assert "schedule:" not in workflow
+    assert "--publish" in workflow
+    assert "SUPABASE_URL" in workflow and "SUPABASE_SERVICE_ROLE_KEY" in workflow
+    assert "--input" not in workflow
 
 
 def test_publication_preparation_is_weight_only_and_normalized() -> None:
