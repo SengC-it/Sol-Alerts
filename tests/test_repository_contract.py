@@ -92,6 +92,9 @@ def test_cron_schedule_has_required_scan_minutes_and_no_literal_credential() -> 
     schedule = (ROOT / "supabase" / "migrations" / "202608050002_schedule.sql").read_text(encoding="utf-8")
     assert "1,16,31,46 * * * *" in schedule
     assert "* * * * *" in schedule
+    assert "create extension if not exists supabase_vault with schema vault;" in schedule
+    assert "create extension if not exists vault;" not in schedule
+    assert "from vault.decrypted_secrets" in schedule
     assert "sol_alerts_cron_secret" in schedule
     assert "cron.schedule(\n      'sol_alerts_scan'" in schedule
     assert "cron.schedule(\n      'sol_alerts_delivery'" in schedule

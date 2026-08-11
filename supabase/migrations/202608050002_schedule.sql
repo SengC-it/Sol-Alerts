@@ -3,10 +3,12 @@
 -- Required Vault names: sol_alerts_scan_url, sol_alerts_delivery_url,
 -- sol_alerts_cron_secret. Optional database settings can override the URLs:
 -- app.settings.sol_alerts_scan_url and app.settings.sol_alerts_delivery_url.
+-- Supabase's Vault extension is named supabase_vault and installs its API in
+-- the vault schema. Keep this idempotent for projects where Vault is already enabled.
 
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
-create extension if not exists vault;
+create extension if not exists supabase_vault with schema vault;
 
 do $do$
 begin
