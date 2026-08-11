@@ -104,6 +104,7 @@ def test_cron_schedule_has_required_scan_minutes_and_no_literal_credential() -> 
 def test_vercel_functions_use_default_node_runtime_and_no_obsolete_runtime_value() -> None:
     vercel_path = ROOT / "vercel.json"
     config = json.loads(vercel_path.read_text(encoding="utf-8"))
+    assert "framework" in config and config["framework"] is None
     functions = config["functions"]
     assert set(functions) == {"api/scan.ts", "api/deliver.ts", "api/health.ts"}
     assert [functions[path]["maxDuration"] for path in sorted(functions)] == [30, 10, 60]
