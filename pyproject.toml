@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools==83.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sol-alerts-research"
+version = "1.0.0"
+description = "Deterministic offline research and walk-forward backtesting for Sol Alerts."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "Sol Alerts maintainers" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.5"]
+
+[project.scripts]
+sol-alerts-backtest = "sol_alerts.backtest:main"
+sol-alerts-download = "sol_alerts.download:main"
+sol-alerts-prepare-data = "sol_alerts.prepare_data:main"
+sol-alerts-prepare-publication = "sol_alerts.publish:main"
+sol-alerts-bootstrap-risk = "sol_alerts.bootstrap:main"
+
+[tool.setuptools]
+package-dir = { "" = "python" }
+
+[tool.setuptools.packages.find]
+where = ["python"]

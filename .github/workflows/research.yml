@@ -1,0 +1,307 @@
+name: weekly-research
+
+on:
+  schedule:
+    - cron: '17 2 * * 1'
+  workflow_dispatch:
+    inputs:
+      bootstrap_champion:
+        description: 'One-time protected initial champion bootstrap; leave false for ordinary weekly evaluation'
+        required: false
+        default: false
+        type: boolean
+      production_evaluation:
+        description: 'Run protected Champion/Challenger replay and publication; schedule enables this automatically'
+        required: false
+        default: false
+        type: boolean
+  push:
+    paths:
+      - 'python/**'
+      - 'config/**'
+      - 'docs/statistical-methodology.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly-research-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare-data:
+    outputs:
+      formal_ready: ${{ steps.prepare.outputs.formal_ready }}
+      cache_key: ${{ steps.cache_keys.outputs.save_key }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12.10'
+          cache: pip
+      - name: Compute unique rolling cache keys
+        id: cache_keys
+        shell: bash
+        run: |
+          WEEK=$(date -u +%G-W%V)
+          SAVE_KEY="market-data-${{ runner.os }}-rolling-v1-${WEEK}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "week=$WEEK" >> "$GITHUB_OUTPUT"
+          echo "save_key=$SAVE_KEY" >> "$GITHUB_OUTPUT"
+      - name: Restore latest compatible historical inputs
+        uses: actions/cache/restore@6849a6489940f00c2f30c0fb92c6274307ccb58a # v4.1.2
+        with:
+          path: .cache/market-data
+          key: ${{ steps.cache_keys.outputs.save_key }}
+          restore-keys: |
+            market-data-${{ runner.os }}-rolling-v1-
+      - name: Install research package
+        run: python -m pip install -e '.[dev]'
+      - name: Prepare official point-in-time inputs
+        id: prepare
+        shell: bash
+        run: |
+          END=$(date -u -d '15 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')
+          START=$(date -u -d '730 days ago' '+%Y-%m-%dT%H:%M:%SZ')
+          python -m sol_alerts.prepare_data --cache-dir .cache/market-data --start "$START" --end "$END" --max-cache-bytes 10000000000 | tee .cache/market-data/prepare-summary.json
+          FORMAL_READY=$(python -c 'import json; print(str(json.load(open(".cache/market-data/prepare-report.json"))["formal_ready"]).lower())')
+          echo "formal_ready=$FORMAL_READY" >> "$GITHUB_OUTPUT"
+          if [ "$FORMAL_READY" = "true" ]; then
+            echo "Formal data is ready; downstream selection and publication jobs may run."
+          else
+            echo "Accumulating official history/provenance; no formal backtest, publication, or email eligibility this week."
+          fi
+      - name: Save updated rolling cache generation
+        if: steps.prepare.outcome == 'success'
+        uses: actions/cache/save@6849a6489940f00c2f30c0fb92c6274307ccb58a # v4.1.2
+        with:
+          path: .cache/market-data
+          key: ${{ steps.cache_keys.outputs.save_key }}
+
+  select-parameters:
+    needs: prepare-data
+    if: needs.prepare-data.outputs.formal_ready == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        selection_shard: [0, 1, 2, 3]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12.10'
+      - name: Restore exact prepared cache generation
+        uses: actions/cache/restore@6849a6489940f00c2f30c0fb92c6274307ccb58a # v4.1.2
+        with:
+          path: .cache/market-data
+          key: ${{ needs.prepare-data.outputs.cache_key }}
+          fail-on-cache-miss: true
+      - name: Install research package
+        run: python -m pip install -e '.[dev]'
+      - name: Emit owned train-validation sufficient statistics
+        run: python -m sol_alerts.backtest --selection-only --selection-shard-index ${{ matrix.selection_shard }} --selection-shard-count 4 --input .cache/market-data/klines --funding .cache/market-data/funding --prepare-report .cache/market-data/prepare-report.json --output "$RUNNER_TEMP/selection-evidence-${{ matrix.selection_shard }}.json"
+      - name: Upload selection evidence artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sol-alerts-selection-evidence-${{ matrix.selection_shard }}
+          path: ${{ runner.temp }}/selection-evidence-${{ matrix.selection_shard }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  merge-selection:
+    needs: [prepare-data, select-parameters]
+    if: needs.prepare-data.outputs.formal_ready == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12.10'
+      - name: Restore prepared data for selection merge
+        uses: actions/cache/restore@6849a6489940f00c2f30c0fb92c6274307ccb58a # v4.1.2
+        with:
+          path: .cache/market-data
+          key: ${{ needs.prepare-data.outputs.cache_key }}
+          fail-on-cache-miss: true
+      - name: Download selection evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: sol-alerts-selection-evidence-*
+          path: reports/selection-evidence
+          merge-multiple: true
+      - name: Install research package
+        run: python -m pip install -e '.[dev]'
+      - name: Merge global selection once
+        run: python -m sol_alerts.backtest --merge-selection --selection-shard-count 4 --selection-evidence reports/selection-evidence/*.json --prepare-report .cache/market-data/prepare-report.json --output "$RUNNER_TEMP/selection.json"
+      - name: Upload merged selection
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sol-alerts-global-selection
+          path: ${{ runner.temp }}/selection.json
+          if-no-files-found: error
+          retention-days: 14
+
+  shard:
+    needs: [prepare-data, merge-selection, build-descriptors]
+    if: needs.prepare-data.outputs.formal_ready == 'true' && needs.build-descriptors.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12.10'
+          cache: pip
+      - name: Restore exact prepared cache generation
+        uses: actions/cache/restore@6849a6489940f00c2f30c0fb92c6274307ccb58a # v4.1.2
+        with:
+          path: .cache/market-data
+          key: ${{ needs.prepare-data.outputs.cache_key }}
+          fail-on-cache-miss: true
+      - name: Install research package
+        run: python -m pip install -e '.[dev]'
+      - name: Download global selection
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sol-alerts-global-selection
+          path: ${{ runner.temp }}
+      - name: Download frozen evaluation descriptors
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sol-alerts-evaluation-descriptors
+          path: ${{ runner.temp }}
+      - name: Run deterministic shard
+        run: python -m sol_alerts.backtest --input .cache/market-data/klines --funding .cache/market-data/funding --prepare-report .cache/market-data/prepare-report.json --selection "$RUNNER_TEMP/selection.json" --evaluation-descriptors "$RUNNER_TEMP/evaluation-descriptors.json" --shard-index ${{ matrix.shard }} --shard-count 4 --output "$RUNNER_TEMP/sol-alerts-shard-${{ matrix.shard }}.json"
+      - name: Upload shard evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sol-alerts-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/sol-alerts-shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish summary only
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os, pathlib
+          report = json.loads((pathlib.Path(os.environ["RUNNER_TEMP"]) / "sol-alerts-shard-${{ matrix.shard }}.json").read_text())
+          print("## Shard", report["shard"]["index"])
+          print("- Symbols:", ", ".join(report["shard"]["symbols"]))
+          print("- Trades:", report["portfolio"]["trades"])
+          print("- Max drawdown:", report["portfolio"]["max_drawdown"])
+          print("- Formal alerts available:", report["gates"]["formal_alerts_available"])
+          PY
+
+  build-descriptors:
+    needs: [prepare-data, merge-selection]
+    if: needs.prepare-data.outputs.formal_ready == 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.production_evaluation == true || inputs.bootstrap_champion == true)))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: sol-alerts-production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12.10'
+      - name: Install research package
+        run: python -m pip install -e '.[dev]'
+      - name: Download global selection
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sol-alerts-global-selection
+          path: ${{ runner.temp }}
+      - name: Fetch active champion descriptor server-side
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python -m sol_alerts.publish --fetch-champion --publish --output "$RUNNER_TEMP/champion-descriptor.json"
+      - name: Freeze proposal before untouched replay
+        run: python -m sol_alerts.backtest --build-evaluation-descriptors --selection "$RUNNER_TEMP/selection.json" --champion-descriptor "$RUNNER_TEMP/champion-descriptor.json" ${{ inputs.bootstrap_champion == true && '--bootstrap-champion' || '' }} --output "$RUNNER_TEMP/evaluation-descriptors.json"
+      - name: Upload bounded non-secret descriptors
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sol-alerts-evaluation-descriptors
+          path: ${{ runner.temp }}/evaluation-descriptors.json
+          if-no-files-found: error
+          retention-days: 14
+
+  aggregate:
+    needs: [prepare-data, build-descriptors, shard]
+    if: needs.prepare-data.outputs.formal_ready == 'true' && needs.build-descriptors.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12.10'
+      - name: Install research package
+        run: python -m pip install -e '.[dev]'
+      - name: Download shard evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: sol-alerts-shard-*
+          path: reports/shards
+          merge-multiple: true
+      - name: Download frozen evaluation descriptors
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sol-alerts-evaluation-descriptors
+          path: ${{ runner.temp }}
+      - name: Aggregate and prepare challenger
+        run: python -m sol_alerts.publish --reports reports/shards/*.json --evaluation-descriptors "$RUNNER_TEMP/evaluation-descriptors.json" --output reports/weekly-publication.json
+      - name: Upload aggregate evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sol-alerts-weekly-publication
+          path: reports/weekly-publication.json
+          if-no-files-found: error
+          retention-days: 14
+
+  guarded-publish:
+    needs: [prepare-data, build-descriptors, aggregate]
+    if: needs.prepare-data.outputs.formal_ready == 'true' && needs.build-descriptors.result == 'success' && needs.aggregate.result == 'success' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.production_evaluation == true || inputs.bootstrap_champion == true)))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: sol-alerts-production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12.10'
+      - name: Install research package
+        run: python -m pip install -e '.[dev]'
+      - name: Download aggregate evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sol-alerts-weekly-publication
+          path: reports
+      - name: Download frozen evaluation descriptors
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sol-alerts-evaluation-descriptors
+          path: ${{ runner.temp }}
+      - name: Guarded atomic publish
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python -m sol_alerts.publish --challenger-report reports/weekly-publication.json --evaluation-descriptors "$RUNNER_TEMP/evaluation-descriptors.json" --publish ${{ inputs.bootstrap_champion == true && '--bootstrap-champion' || '' }} --output reports/published.json

@@ -1,0 +1,7 @@
+reports/
+.cache/
+market-data/
+raw-history/
+python/tests/
+tests/
+node_modules/

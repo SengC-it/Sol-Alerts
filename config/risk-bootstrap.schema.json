@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/sol-alerts/risk-bootstrap.schema.json",
+  "title": "Sol Alerts 90-day risk bootstrap",
+  "type": "object",
+  "required": ["baselineVersion", "btcReturns", "eligibleMarketReturns", "returnsBySymbol", "lastObservationAt", "pauseUntil"],
+  "properties": {
+    "baselineVersion": { "const": "risk-v1" },
+    "btcReturns": { "type": "array", "minItems": 8640, "items": { "type": "number" } },
+    "eligibleMarketReturns": { "type": "array", "minItems": 8640, "items": { "type": "number" } },
+    "returnsBySymbol": { "type": "object", "additionalProperties": { "type": "array", "minItems": 8640, "items": { "type": "number" } } },
+    "lastObservationAt": { "type": "integer", "minimum": 0 },
+    "pauseUntil": { "type": ["integer", "null"] }
+  },
+  "additionalProperties": false
+}

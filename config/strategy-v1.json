@@ -1,0 +1,97 @@
+{
+  "configVersion": "1.0.0",
+  "schemaVersion": 1,
+  "publishedAt": "2026-08-05T00:00:00.000Z",
+  "universe": {
+    "quoteAsset": "USDT",
+    "contractType": "PERPETUAL",
+    "minFormalHistoryDays": 180,
+    "shadowStartDays": 30,
+    "minQuoteVolume24h": 20000000,
+    "maxSpreadBps": 10,
+    "minDepthNotionalUsdt": 100000,
+    "depthBandPct": 0.005,
+    "referenceMaxOrderNotionalUsdt": 10000
+  },
+  "marketState": {
+    "emaFast": 20,
+    "emaSlow": 50,
+    "adxPeriod": 14,
+    "atrPeriod": 14,
+    "trendThresholds": [20, 25, 30],
+    "rangeThresholds": [15, 20]
+  },
+  "strategies": {
+    "trend_breakout": {
+      "lookbacks": [20, 40],
+      "closeBufferAtr": [0.1, 0.2],
+      "volumeMultipliers": [1.25, 1.5]
+    },
+    "trend_pullback": {
+      "emaPeriod": 20,
+      "structureLookback": 40,
+      "maxDistanceAtr": 0.25,
+      "contractionLookback": 4
+    },
+    "range_mean_reversion": {
+      "bollingerPeriod": 20,
+      "bollingerDeviations": [2, 2.5],
+      "rsiPeriod": 14,
+      "rsiThresholds": [[30, 70], [25, 75]]
+    }
+  },
+  "execution": {
+    "takerFeeRatePerSide": 0.0005,
+    "baseAdverseSlippageRatePerSide": 0.0005,
+    "entryValidityMinutes": 30,
+    "maxHoldHours": 48,
+    "minimumNetRewardRisk": 2,
+    "riskPerSimulatedTrade": 0.01,
+    "maxOpenPositions": 6,
+    "maxLongPositions": 3,
+    "maxShortPositions": 3,
+    "maxSignalsPerEmail": 10
+  },
+  "weights": {
+    "globalBase": {
+      "trend_breakout": 0.34,
+      "trend_pullback": 0.33,
+      "range_mean_reversion": 0.33
+    },
+    "symbolDeviationCap": 0.2,
+    "shrinkagePrior": 30,
+    "shadowBelow": 0.2,
+    "recoveryAbove": 0.25,
+    "weeklyChangeCap": 0.1
+  },
+  "score": {
+    "highPriorityMinimum": 80,
+    "ordinaryMinimum": 70,
+    "historicalRobustnessMax": 30,
+    "currentSetupMax": 30,
+    "marketStateMatchMax": 25,
+    "executionQualityMax": 15
+  },
+  "risk": {
+    "correlationLookbackDays": 90,
+    "correlationThreshold": 0.8,
+    "maxClusterSignalsPerDirection": 3,
+    "extremeReturnPercentile": 0.995,
+    "extremePauseMinutes": 60,
+    "emergencyDrawdownMultiple": 1.5,
+    "statisticalRollbackMinimumClosedSignals": 30,
+    "statisticalRollbackAlpha": 0.05
+  },
+  "research": {
+    "trainFraction": 0.6,
+    "validationFraction": 0.2,
+    "testFraction": 0.2,
+    "adaptiveLongWindowMonths": 24,
+    "adaptiveRecentWindowDays": 90,
+    "minimumTestTradesPerSymbolStrategy": 30,
+    "minimumTestTradesPerFamily": 300,
+    "bootstrapReplicates": 2000,
+    "randomSeed": 1722854400,
+    "maxPortfolioDrawdown": 0.1
+  }
+}

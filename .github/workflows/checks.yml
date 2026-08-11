@@ -1,0 +1,41 @@
+name: checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20.19.0'
+          cache: npm
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12.10'
+          cache: pip
+      - name: Install Node dependencies
+        run: npm ci
+      - name: TypeScript checks and tests
+        run: npm run check
+      - name: TypeScript build
+        run: npm run build
+      - name: Install Python package
+        run: python -m pip install -e '.[dev]'
+      - name: Python tests
+        run: python -m pytest -q
+      - name: Deterministic smoke backtest
+        run: python -m sol_alerts.backtest --smoke
