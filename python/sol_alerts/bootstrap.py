@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 
 from .config import load_config
 from .data import Candle, read_candles
-from .download import INTERVAL_MS, _fetch_json, download_klines
+from .download import INTERVAL_MS, _fetch_json, download_klines, fetch_exchange_info
 
 BASELINE_VERSION = "risk-v1"
 OBSERVATIONS = 90 * 24 * 4
@@ -27,17 +27,17 @@ def _supabase_request_headers(service_role_key: str) -> dict[str, str]:
     return headers
 
 
-def fetch_exchange_info(base_url: str = "https://fapi.binance.com") -> dict[str, object]:
-    payload = _fetch_json(f"{base_url.rstrip('/')}/fapi/v1/exchangeInfo")
-    if not isinstance(payload, dict) or not isinstance(payload.get("symbols"), list):
-        raise RuntimeError("Binance exchangeInfo response is malformed")
-    return payload
-
-
 def fetch_24h_tickers(base_url: str = "https://fapi.binance.com") -> list[dict[str, object]]:
     payload = _fetch_json(f"{base_url.rstrip('/')}/fapi/v1/ticker/24hr")
     if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
         raise RuntimeError("Binance 24h ticker response is malformed")
+    return [dict(row) for row in payload]
+
+
+def fetch_book_tickers(base_url: str = "https://fapi.binance.com") -> list[dict[str, object]]:
+    payload = _fetch_json(f"{base_url.rstrip('/')}/fapi/v1/ticker/bookTicker")
+    if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
+        raise RuntimeError("Binance bookTicker response is malformed")
     return [dict(row) for row in payload]
 
 
@@ -128,7 +128,20 @@ def _number(value: object, field: str) -> float:
     return result
 
 
-def select_risk_universe(exchange_info: dict[str, object], tickers: list[dict[str, object]], cutoff_end_ms: int, config: dict[str, Any] | None = None) -> list[str]:
+def _unique_ticker_batch(rows: list[dict[str, object]], batch_name: str) -> dict[str, dict[str, object]]:
+    indexed: dict[str, dict[str, object]] = {}
+    for row in rows:
+        symbol = row.get("symbol")
+        if not isinstance(symbol, str) or not symbol:
+            raise ValueError(f"Binance {batch_name} ticker symbol is malformed")
+        normalized = symbol.upper()
+        if normalized in indexed:
+            raise ValueError(f"duplicate Binance {batch_name} ticker for {normalized}")
+        indexed[normalized] = row
+    return indexed
+
+
+def select_risk_universe(exchange_info: dict[str, object], volume_tickers: list[dict[str, object]], book_tickers: list[dict[str, object]], cutoff_end_ms: int, config: dict[str, Any] | None = None) -> list[str]:
     """Select every current static-eligible USDT perpetual listed for 90 days.
 
     This intentionally stops at the live static gates (volume and spread). Depth
@@ -140,14 +153,8 @@ def select_risk_universe(exchange_info: dict[str, object], tickers: list[dict[st
     rows = exchange_info.get("symbols")
     if not isinstance(rows, list):
         raise ValueError("Binance exchangeInfo symbols are missing")
-    ticker_map: dict[str, dict[str, object]] = {}
-    for ticker in tickers:
-        symbol = ticker.get("symbol")
-        if not isinstance(symbol, str) or not symbol:
-            raise ValueError("Binance 24h ticker symbol is malformed")
-        if symbol in ticker_map:
-            raise ValueError(f"duplicate Binance 24h ticker for {symbol}")
-        ticker_map[symbol] = ticker
+    volume_map = _unique_ticker_batch(volume_tickers, "24h")
+    book_map = _unique_ticker_batch(book_tickers, "bookTicker")
     selected: list[str] = []
     for row in rows:
         if not isinstance(row, dict) or not isinstance(row.get("symbol"), str):
@@ -170,12 +177,15 @@ def select_risk_universe(exchange_info: dict[str, object], tickers: list[dict[st
             raise ValueError(f"{symbol} lacks official onboardDate for 90-day eligibility")
         if onboard_ms > first_open:
             continue
-        ticker = ticker_map.get(symbol)
-        if ticker is None:
-            raise ValueError(f"{symbol} is missing from the all-market ticker batch")
-        quote_volume = _number(ticker.get("quoteVolume"), "quoteVolume")
-        bid = _number(ticker.get("bidPrice"), "bidPrice")
-        ask = _number(ticker.get("askPrice"), "askPrice")
+        volume_ticker = volume_map.get(symbol)
+        if volume_ticker is None:
+            raise ValueError(f"{symbol} is missing from the all-market 24h ticker batch")
+        book_ticker = book_map.get(symbol)
+        if book_ticker is None:
+            raise ValueError(f"{symbol} is missing from the all-market bookTicker batch")
+        quote_volume = _number(volume_ticker.get("quoteVolume"), "quoteVolume")
+        bid = _number(book_ticker.get("bidPrice"), "bidPrice")
+        ask = _number(book_ticker.get("askPrice"), "askPrice")
         if bid <= 0 or ask <= 0 or ask < bid:
             raise ValueError(f"{symbol} has invalid bid/ask data")
         spread_bps = (ask - bid) / ((ask + bid) / 2) * 10_000
@@ -193,7 +203,7 @@ def build_official_risk_state(cache_dir: Path, cutoff_end_ms: int, base_url: str
     """Download and validate one reproducible official risk baseline."""
     config = config or load_config()
     first_open, end_ms = baseline_window(cutoff_end_ms)
-    symbols = select_risk_universe(fetch_exchange_info(base_url), fetch_24h_tickers(base_url), end_ms, config)
+    symbols = select_risk_universe(fetch_exchange_info(base_url), fetch_24h_tickers(base_url), fetch_book_tickers(base_url), end_ms, config)
     kline_dir = cache_dir / "klines"
     kline_dir.mkdir(parents=True, exist_ok=True)
     candles_by_symbol: dict[str, list[Candle]] = {}

@@ -144,8 +144,12 @@ def _risk_instrument(symbol: str, first_open: int, **overrides: object) -> dict[
     return row
 
 
-def _risk_ticker(symbol: str, quote_volume: float = 25_000_000, bid: float = 100.0, ask: float = 100.05) -> dict[str, object]:
-    return {"symbol": symbol, "quoteVolume": str(quote_volume), "bidPrice": str(bid), "askPrice": str(ask)}
+def _risk_volume_ticker(symbol: str, quote_volume: float = 25_000_000) -> dict[str, object]:
+    return {"symbol": symbol, "quoteVolume": str(quote_volume)}
+
+
+def _risk_book_ticker(symbol: str, bid: float = 100.0, ask: float = 100.05) -> dict[str, object]:
+    return {"symbol": symbol, "bidPrice": str(bid), "askPrice": str(ask)}
 
 
 def test_official_risk_universe_uses_live_static_gates_and_ignores_delivery_date() -> None:
@@ -162,13 +166,19 @@ def test_official_risk_universe_uses_live_static_gates_and_ignores_delivery_date
             _risk_instrument("WIDEUSDT", first_open),
         ]
     }
-    tickers = [
-        _risk_ticker("BTCUSDT"),
-        _risk_ticker("ETHUSDT", 20_000_000),
-        _risk_ticker("LOWUSDT", 19_999_999),
-        _risk_ticker("WIDEUSDT", 30_000_000, 100.0, 100.3),
+    volume_tickers = [
+        _risk_volume_ticker("BTCUSDT"),
+        _risk_volume_ticker("ETHUSDT", 20_000_000),
+        _risk_volume_ticker("LOWUSDT", 19_999_999),
+        _risk_volume_ticker("WIDEUSDT", 30_000_000),
     ]
-    assert select_risk_universe(exchange_info, tickers, cutoff, config) == ["BTCUSDT", "ETHUSDT"]
+    book_tickers = [
+        _risk_book_ticker("BTCUSDT"),
+        _risk_book_ticker("ETHUSDT"),
+        _risk_book_ticker("LOWUSDT"),
+        _risk_book_ticker("WIDEUSDT", 100.0, 100.3),
+    ]
+    assert select_risk_universe(exchange_info, volume_tickers, book_tickers, cutoff, config) == ["BTCUSDT", "ETHUSDT"]
 
 
 def test_risk_baseline_rejects_late_or_misaligned_closed_candles() -> None:
@@ -188,7 +198,8 @@ def test_official_risk_download_aligns_all_symbols_and_uses_market_median(tmp_pa
     first_open, _ = baseline_window(cutoff)
     exchange_info = {"symbols": [_risk_instrument("BTCUSDT", first_open), _risk_instrument("ETHUSDT", first_open)]}
     monkeypatch.setattr(bootstrap, "fetch_exchange_info", lambda _base_url: exchange_info)
-    monkeypatch.setattr(bootstrap, "fetch_24h_tickers", lambda _base_url: [_risk_ticker("BTCUSDT"), _risk_ticker("ETHUSDT")])
+    monkeypatch.setattr(bootstrap, "fetch_24h_tickers", lambda _base_url: [_risk_volume_ticker("BTCUSDT"), _risk_volume_ticker("ETHUSDT")])
+    monkeypatch.setattr(bootstrap, "fetch_book_tickers", lambda _base_url: [_risk_book_ticker("BTCUSDT"), _risk_book_ticker("ETHUSDT")])
     calls: list[str] = []
 
     def fake_download(symbol: str, start_ms: int, end_ms: int, output: Path, **_kwargs: object) -> int:
@@ -216,7 +227,8 @@ def test_official_risk_builder_fails_closed_on_one_incomplete_symbol(tmp_path: P
     cutoff = 10_000 * bootstrap.INTERVAL_MS + bootstrap.INTERVAL_MS - 1
     first_open, _ = baseline_window(cutoff)
     monkeypatch.setattr(bootstrap, "fetch_exchange_info", lambda _base_url: {"symbols": [_risk_instrument("BTCUSDT", first_open), _risk_instrument("ETHUSDT", first_open)]})
-    monkeypatch.setattr(bootstrap, "fetch_24h_tickers", lambda _base_url: [_risk_ticker("BTCUSDT"), _risk_ticker("ETHUSDT")])
+    monkeypatch.setattr(bootstrap, "fetch_24h_tickers", lambda _base_url: [_risk_volume_ticker("BTCUSDT"), _risk_volume_ticker("ETHUSDT")])
+    monkeypatch.setattr(bootstrap, "fetch_book_tickers", lambda _base_url: [_risk_book_ticker("BTCUSDT"), _risk_book_ticker("ETHUSDT")])
 
     def incomplete_download(symbol: str, _start_ms: int, _end_ms: int, output: Path, **_kwargs: object) -> int:
         candles = synthetic_candles(symbol, bootstrap.RISK_CANDLE_COUNT - (1 if symbol == "ETHUSDT" else 0), first_open)
@@ -229,6 +241,23 @@ def test_official_risk_builder_fails_closed_on_one_incomplete_symbol(tmp_path: P
     monkeypatch.setattr(bootstrap, "download_klines", incomplete_download)
     with pytest.raises(ValueError, match="exactly 8641"):
         build_official_risk_state(tmp_path, cutoff)
+
+
+@pytest.mark.parametrize(
+    ("book_tickers", "message"),
+    [
+        ([_risk_book_ticker("BTCUSDT")], "missing from the all-market bookTicker"),
+        ([_risk_book_ticker("BTCUSDT"), _risk_book_ticker("BTCUSDT"), _risk_book_ticker("ETHUSDT")], "duplicate Binance bookTicker"),
+        ([{"symbol": "BTCUSDT", "bidPrice": "not-a-price", "askPrice": "100"}, _risk_book_ticker("ETHUSDT")], "field bidPrice is malformed"),
+    ],
+)
+def test_risk_universe_fails_closed_for_missing_duplicate_or_malformed_book_ticker(book_tickers: list[dict[str, object]], message: str) -> None:
+    config = load_config()
+    cutoff = 10_000 * bootstrap.INTERVAL_MS + bootstrap.INTERVAL_MS - 1
+    first_open, _ = baseline_window(cutoff)
+    exchange_info = {"symbols": [_risk_instrument("BTCUSDT", first_open), _risk_instrument("ETHUSDT", first_open)]}
+    with pytest.raises(ValueError, match=message):
+        select_risk_universe(exchange_info, [_risk_volume_ticker("BTCUSDT"), _risk_volume_ticker("ETHUSDT")], book_tickers, cutoff, config)
 
 
 def test_risk_publish_uses_secret_key_header_mode_and_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
