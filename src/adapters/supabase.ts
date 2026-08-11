@@ -9,14 +9,14 @@ export class SupabaseRestRepository implements Repository {
   public constructor(private readonly baseUrl: string, private readonly serviceRoleKey: string) {}
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const headers = new Headers(init.headers);
+    headers.set("apikey", this.serviceRoleKey);
+    headers.set("Content-Type", "application/json");
+    if (this.serviceRoleKey.startsWith("sb_secret_")) headers.delete("Authorization");
+    else headers.set("Authorization", `Bearer ${this.serviceRoleKey}`);
     const response = await fetch(`${this.baseUrl}/rest/v1/${path}`, {
       ...init,
-      headers: {
-        apikey: this.serviceRoleKey,
-        Authorization: `Bearer ${this.serviceRoleKey}`,
-        "Content-Type": "application/json",
-        ...(init.headers ?? {}),
-      },
+      headers,
     });
     if (!response.ok) {
       const detail = redactSecrets(await response.text(), [this.serviceRoleKey]);

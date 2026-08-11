@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BinancePublicClient } from "../adapters/binance.js";
 import { GmailSmtpMailer, type SmtpTransport } from "../adapters/smtp.js";
+import { SupabaseRestRepository } from "../adapters/supabase.js";
 
 class FakeTransport implements SmtpTransport {
   private readonly listeners = new Map<string, Set<(...args: any[]) => void>>();
@@ -62,6 +63,62 @@ test("SMTP adapter accepts multiline replies and completes the Gmail protocol", 
 test("SMTP adapter fails closed on a socket timeout", async () => {
   const mailer = new GmailSmtpMailer("user@example.com", "app-password", async () => new FakeTransport(true), 100);
   await assert.rejects(mailer.send({ recipient: "recipient@example.com", subject: "test", bodyText: "body", idempotencyKey: "scan:timeout" }), /SMTP timeout/);
+});
+
+test("Supabase REST sends a new sb_secret key only as apikey", async () => {
+  const originalFetch = globalThis.fetch;
+  const secretKey = "sb_secret_protocol_fixture";
+  let captured: Headers | undefined;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    captured = new Headers(init?.headers);
+    return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    await new SupabaseRestRepository("https://project.supabase.co", secretKey).getCurrentConfigVersion();
+    assert.equal(captured?.get("apikey"), secretKey);
+    assert.equal(captured?.get("authorization"), null);
+    assert.equal(captured?.get("content-type"), "application/json");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Supabase REST keeps both headers for a legacy JWT service-role key", async () => {
+  const originalFetch = globalThis.fetch;
+  const legacyKey = "legacy.jwt.service-role.fixture";
+  let captured: Headers | undefined;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    captured = new Headers(init?.headers);
+    return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    await new SupabaseRestRepository("https://project.supabase.co", legacyKey).getCurrentConfigVersion();
+    assert.equal(captured?.get("apikey"), legacyKey);
+    assert.equal(captured?.get("authorization"), `Bearer ${legacyKey}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Supabase REST redacts new and legacy keys from error details", async () => {
+  const originalFetch = globalThis.fetch;
+  const keys = ["sb_secret_redaction_fixture", "legacy.jwt.redaction.fixture"];
+  try {
+    for (const key of keys) {
+      globalThis.fetch = (async (): Promise<Response> => new Response(`provider rejected ${key}`, { status: 401 })) as typeof fetch;
+      await assert.rejects(
+        new SupabaseRestRepository("https://project.supabase.co", key).getCurrentConfigVersion(),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.match(error.message, /Supabase request failed \(401\): provider rejected \[REDACTED\]/);
+          assert.doesNotMatch(error.message, new RegExp(key.replaceAll(".", "\\.")));
+          return true;
+        },
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("Binance funding adapter uses bounded all-market pagination and validates events", async () => {
