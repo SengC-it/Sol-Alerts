@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import math
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
@@ -216,21 +219,15 @@ def build_official_risk_state(cache_dir: Path, cutoff_end_ms: int, base_url: str
     return build_risk_state(candles_by_symbol), symbols
 
 
-def publish_risk_state(state: dict[str, object], open_url: Callable[..., Any] | None = None) -> None:
-    """Atomically publish only the validated global_risk runtime status."""
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
-        raise RuntimeError("risk baseline publish requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY")
+def _post_rpc(url: str, key: str, rpc: str, payload: dict[str, object], opener: Callable[..., Any]) -> None:
     request = Request(
-        f"{url.rstrip('/')}/rest/v1/rpc/sol_set_runtime_status",
-        data=json.dumps({"p_key": "global_risk", "p_value": state}, separators=(",", ":")).encode("utf-8"),
+        f"{url.rstrip('/')}/rest/v1/rpc/{rpc}",
+        data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
         headers=_supabase_request_headers(key),
         method="POST",
     )
-    opener = open_url or urlopen
     try:
-        with opener(request, timeout=20) as response:
+        with opener(request, timeout=60) as response:
             status = int(getattr(response, "status", 200))
             if status < 200 or status >= 300:
                 raise RuntimeError(f"HTTP {status}")
@@ -240,6 +237,57 @@ def publish_risk_state(state: dict[str, object], open_url: Callable[..., Any] | 
         raise
     except Exception as error:
         raise RuntimeError(f"risk baseline publish failed: {type(error).__name__}") from error
+
+
+def _risk_series(state: dict[str, object]) -> dict[str, list[float]]:
+    symbols = state.get("returnsBySymbol")
+    if not isinstance(symbols, dict) or not symbols:
+        raise ValueError("risk baseline returnsBySymbol must be non-empty")
+    combined = {"btcReturns": state.get("btcReturns"), "eligibleMarketReturns": state.get("eligibleMarketReturns"), **symbols}
+    series: dict[str, list[float]] = {}
+    for series_key, values in combined.items():
+        if not isinstance(series_key, str) or not isinstance(values, list) or not values or any(not isinstance(item, (int, float)) or not math.isfinite(item) for item in values):
+            raise ValueError(f"risk baseline series {series_key} is invalid")
+        series[series_key] = values
+    return series
+
+
+def publish_risk_state(state: dict[str, object], open_url: Callable[..., Any] | None = None, chunk_size: int = 1000, workers: int = 8) -> None:
+    """Upload verified chunks, then atomically replace global_risk in Postgres."""
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        raise RuntimeError("risk baseline publish requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY")
+    if chunk_size <= 0 or workers <= 0:
+        raise ValueError("risk baseline chunk_size and workers must be positive")
+    series = _risk_series(state)
+    observations = len(series["btcReturns"])
+    if any(len(values) != observations for values in series.values()):
+        raise ValueError("risk baseline series lengths are inconsistent")
+    baseline_version = state.get("baselineVersion")
+    last_observation_at = state.get("lastObservationAt")
+    if not isinstance(baseline_version, str) or not baseline_version or not isinstance(last_observation_at, int):
+        raise ValueError("risk baseline metadata is invalid")
+    chunks: list[tuple[str, int, int, str, str]] = []
+    manifest_entries: list[str] = []
+    for series_key in sorted(series):
+        values = series[series_key]
+        chunk_count = math.ceil(len(values) / chunk_size)
+        for chunk_index in range(chunk_count):
+            chunk_text = json.dumps(values[chunk_index * chunk_size : (chunk_index + 1) * chunk_size], separators=(",", ":"), allow_nan=False)
+            chunk_hash = hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
+            chunks.append((series_key, chunk_index, chunk_count, chunk_text, chunk_hash))
+            manifest_entries.append(f"{series_key}:{chunk_index}:{chunk_hash}")
+    manifest_hash = hashlib.sha256("|".join(manifest_entries).encode("utf-8")).hexdigest()
+    upload_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"sol-alerts:{baseline_version}:{last_observation_at}:{manifest_hash}"))
+    opener = open_url or urlopen
+    _post_rpc(url, key, "sol_begin_risk_bootstrap", {"p_upload_id": upload_id, "p_baseline_version": baseline_version, "p_last_observation_at": last_observation_at, "p_observations": observations, "p_symbol_count": len(series) - 2, "p_manifest_hash": manifest_hash}, opener)
+    def upload_chunk(chunk: tuple[str, int, int, str, str]) -> None:
+        series_key, chunk_index, chunk_count, chunk_text, chunk_hash = chunk
+        _post_rpc(url, key, "sol_upload_risk_bootstrap_chunk", {"p_upload_id": upload_id, "p_series_key": series_key, "p_chunk_index": chunk_index, "p_chunk_count": chunk_count, "p_chunk_text": chunk_text, "p_chunk_hash": chunk_hash}, opener)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(upload_chunk, chunks))
+    _post_rpc(url, key, "sol_finalize_risk_bootstrap", {"p_upload_id": upload_id}, opener)
 
 
 def _closed_cutoff_now_ms() -> int:

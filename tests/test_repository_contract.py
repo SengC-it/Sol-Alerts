@@ -11,14 +11,15 @@ PROJECT_TABLES = {
     "sol_app_configurations", "sol_instruments", "sol_scan_runs", "sol_signal_states", "sol_signals",
     "sol_simulated_positions", "sol_simulated_trades", "sol_strategy_evidence", "sol_weight_versions",
     "sol_outbox", "sol_delivery_attempts", "sol_health_events", "sol_runtime_status",
-    "sol_simulation_accounts", "sol_research_reports",
+    "sol_simulation_accounts", "sol_research_reports", "sol_risk_bootstrap_sessions", "sol_risk_bootstrap_chunks",
 }
 PROJECT_RPCS = {
     "sol_commit_scan", "sol_claim_due_outbox", "sol_mark_outbox_delivered", "sol_mark_outbox_failed",
     "sol_set_runtime_status", "sol_record_health_event", "sol_publish_weight_version",
     "sol_rollback_weight_version", "sol_rollback_active_weight", "sol_get_champion_research_report",
     "sol_reconcile_simulation", "sol_get_simulation_state", "sol_apply_lifecycle_evaluation",
-    "sol_publish_weight_challenger", "sol_get_active_weight_version",
+    "sol_publish_weight_challenger", "sol_get_active_weight_version", "sol_begin_risk_bootstrap",
+    "sol_upload_risk_bootstrap_chunk", "sol_finalize_risk_bootstrap",
 }
 UNPREFIXED_TABLES = tuple(name.removeprefix("sol_") for name in PROJECT_TABLES)
 UNPREFIXED_RPCS = tuple(name.removeprefix("sol_") for name in PROJECT_RPCS)
@@ -74,7 +75,7 @@ def _project_indexes(sql: str) -> set[tuple[str, str, tuple[str, ...]]]:
 def test_every_public_state_table_is_present_and_rls_enabled() -> None:
     migration = (ROOT / "supabase" / "migrations" / "202608050001_core.sql").read_text(encoding="utf-8")
     additive = (ROOT / "supabase" / "migrations" / "202608050003_live_simulation.sql").read_text(encoding="utf-8")
-    tables = tuple(sorted(PROJECT_TABLES - {"sol_simulation_accounts", "sol_research_reports"}))
+    tables = tuple(sorted(PROJECT_TABLES - {"sol_simulation_accounts", "sol_research_reports", "sol_risk_bootstrap_sessions", "sol_risk_bootstrap_chunks"}))
     for table in tables:
         assert f"create table if not exists public.{table}" in migration
         assert f"'{table}'" in migration
@@ -82,6 +83,10 @@ def test_every_public_state_table_is_present_and_rls_enabled() -> None:
     assert "security definer" in migration
     assert "create table if not exists public.sol_simulation_accounts" in additive
     assert "create table if not exists public.sol_research_reports" in additive
+    risk_chunks = (ROOT / "supabase" / "migrations" / "20260812013331_risk_bootstrap_chunks.sql").read_text(encoding="utf-8")
+    assert "create table if not exists public.sol_risk_bootstrap_sessions" in risk_chunks
+    assert "create table if not exists public.sol_risk_bootstrap_chunks" in risk_chunks
+    assert risk_chunks.count("enable row level security") == 2
     assert "v_signal->>'symbol' || ':' || v_signal->>'direction'" in migration
     assert "v_signal->>'symbol' || ':' || v_signal->>'family' || ':' || v_signal->>'direction'" not in migration
     assert "alter table public.sol_simulated_positions enable row level security" not in additive
@@ -244,6 +249,7 @@ def test_every_project_foreign_key_has_a_covering_index_and_005_repairs_existing
         ("sol_outbox", "scan_run_id", "sol_scan_runs"),
         ("sol_delivery_attempts", "outbox_id", "sol_outbox"),
         ("sol_research_reports", "weight_version_id", "sol_weight_versions"),
+        ("sol_risk_bootstrap_chunks", "upload_id", "sol_risk_bootstrap_sessions"),
     }
     assert foreign_keys == expected_foreign_keys
 

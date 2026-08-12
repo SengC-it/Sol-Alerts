@@ -278,21 +278,53 @@ def test_risk_publish_uses_secret_key_header_mode_and_fails_closed(monkeypatch: 
 
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "sb_secret_test_key")
-    bootstrap.publish_risk_state({"baselineVersion": "risk-v1"}, fake_open)
+    state = {
+        "baselineVersion": "risk-v1",
+        "lastObservationAt": 123,
+        "btcReturns": [0.1, 0.2],
+        "eligibleMarketReturns": [0.3, 0.4],
+        "returnsBySymbol": {"BTCUSDT": [0.1, 0.2]},
+    }
+    bootstrap.publish_risk_state(state, fake_open, chunk_size=1, workers=1)
     secret_request = captured[-1]
     secret_headers = {name.lower(): value for name, value in secret_request.header_items()}  # type: ignore[union-attr]
     assert secret_headers["apikey"] == "sb_secret_test_key"
     assert "authorization" not in secret_headers
 
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "legacy-jwt-key")
-    bootstrap.publish_risk_state({"baselineVersion": "risk-v1"}, fake_open)
+    bootstrap.publish_risk_state(state, fake_open, chunk_size=1, workers=1)
     legacy_headers = {name.lower(): value for name, value in captured[-1].header_items()}  # type: ignore[union-attr]
     assert legacy_headers["apikey"] == "legacy-jwt-key"
     assert legacy_headers["authorization"] == "Bearer legacy-jwt-key"
 
     monkeypatch.delenv("SUPABASE_URL")
     with pytest.raises(RuntimeError, match="requires SUPABASE_URL"):
-        bootstrap.publish_risk_state({"baselineVersion": "risk-v1"}, fake_open)
+        bootstrap.publish_risk_state(state, fake_open)
+
+
+def test_risk_publish_chunks_then_finalizes_with_hashes(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[object] = []
+
+    class Response:
+        status = 204
+        def __enter__(self) -> "Response": return self
+        def __exit__(self, *_args: object) -> None: return None
+
+    def fake_open(request: object, **_kwargs: object) -> Response:
+        requests.append(request)
+        return Response()
+
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "sb_secret_test_key")
+    state = {"baselineVersion": "risk-v1", "lastObservationAt": 123, "btcReturns": [0.1, 0.2], "eligibleMarketReturns": [0.3, 0.4], "returnsBySymbol": {"BTCUSDT": [0.1, 0.2]}}
+    bootstrap.publish_risk_state(state, fake_open, chunk_size=1, workers=1)
+    urls = [request.full_url for request in requests]  # type: ignore[union-attr]
+    assert urls[0].endswith("/rpc/sol_begin_risk_bootstrap")
+    assert urls[-1].endswith("/rpc/sol_finalize_risk_bootstrap")
+    assert urls.count("https://example.supabase.co/rest/v1/rpc/sol_upload_risk_bootstrap_chunk") == 6
+    chunk_payload = json.loads(requests[1].data)  # type: ignore[union-attr]
+    assert len(chunk_payload["p_chunk_hash"]) == 64
+    assert chunk_payload["p_chunk_text"].startswith("[")
 
 
 def test_risk_bootstrap_workflow_is_manual_and_never_fixture_or_cron_mode() -> None:
