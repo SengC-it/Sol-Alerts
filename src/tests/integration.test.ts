@@ -113,7 +113,7 @@ test("halted scan suppresses formal email but continues validated shadow telemet
   assert.equal(repository.commits.length, 1);
 });
 
-test("aggregated email carries hard-risk fields and disclaimer", () => {
+test("aggregated email is concise Chinese and carries risk fields and disclaimer", () => {
   const signal = {
     symbol: "BTCUSDT",
     direction: "long",
@@ -138,10 +138,12 @@ test("aggregated email carries hard-risk fields and disclaimer", () => {
     shadowOnly: false,
   } satisfies SignalCandidate;
   const email = renderAggregatedAlert([signal], "scan");
-  assert.match(email.bodyText, /Technical invalidation/);
-  assert.match(email.bodyText, /liquidation level/);
-  assert.match(email.bodyText, /not investment advice/);
-  assert.match(email.bodyText, /提醒不是自动下单，需人工判断/);
+  assert.equal(email.subject, "【Sol Alerts】发现1个交易机会");
+  assert.match(email.bodyText, /BTCUSDT · 看涨 · 90分（重点）/);
+  assert.match(email.bodyText, /建议关注区间：100\.00～101\.00/);
+  assert.match(email.bodyText, /参考止损：94\.0000｜参考止盈：115\.00/);
+  assert.match(email.bodyText, /系统不会自动下单/);
+  assert.doesNotMatch(email.bodyText, /Technical|invalidation|liquidation|Untouched/);
   assert.equal(config.execution.maxSignalsPerEmail, 10);
 });
 

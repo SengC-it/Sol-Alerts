@@ -86,10 +86,12 @@ export class GmailSmtpMailer implements Mailer {
       if (responseCode(await readResponse()) !== 354) throw new Error("SMTP DATA command failed");
       const body = message.bodyText.replace(/\r?\n/g, "\r\n").replace(/^\./gm, "..");
       socket.write([
-        `From: ${this.username}`,
+        `From: Sol Alerts <${this.username}>`,
         `To: ${message.recipient}`,
         `Subject: ${message.subject}`,
+        "MIME-Version: 1.0",
         "Content-Type: text/plain; charset=utf-8",
+        "Content-Transfer-Encoding: 8bit",
         `X-Sol-Alerts-Idempotency: ${message.idempotencyKey}`,
         "",
         body,

@@ -58,6 +58,7 @@ test("SMTP adapter accepts multiline replies and completes the Gmail protocol", 
   await mailer.send({ recipient: "recipient@example.com", subject: "test", bodyText: "line one\n.line two", idempotencyKey: "scan:1" });
   assert.ok(transport?.writes.some((write) => write.startsWith("EHLO")));
   assert.ok(transport?.writes.some((write) => write.includes("..line two")));
+  assert.ok(transport?.writes.some((write) => write.includes("From: Sol Alerts <user@example.com>")));
 });
 
 test("SMTP adapter fails closed on a socket timeout", async () => {

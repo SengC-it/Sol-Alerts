@@ -119,7 +119,7 @@ def test_vercel_functions_use_default_node_runtime_and_no_obsolete_runtime_value
     assert "Sol Alerts API" in public_index.read_text(encoding="utf-8")
     assert not any(path.name in {"dist", "src", "python"} for path in (ROOT / "public").iterdir())
     functions = config["functions"]
-    assert set(functions) == {"api/scan.ts", "api/deliver.ts", "api/health.ts"}
+    assert set(functions) == {"api/scan.ts", "api/deliver.ts", "api/health.ts", "api/activity.ts"}
     assert [functions[path]["maxDuration"] for path in sorted(functions)] == [30, 10, 60]
     assert all("runtime" not in settings for settings in functions.values())
     assert "nodejs20.x" not in vercel_path.read_text(encoding="utf-8")

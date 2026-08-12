@@ -145,30 +145,28 @@ function appendSeries(existing: number[], value: number): number[] {
 }
 
 export function renderAggregatedAlert(signals: SignalCandidate[], scanRunId?: string, config?: StrategyConfig): { subject: string; bodyText: string } {
-  const lines = [
-    "Sol Alerts - research signal digest",
-    ...(scanRunId ? [`Scan: ${scanRunId}`] : []),
-    "",
-    "提醒不是自动下单，需人工判断。",
-    "This is personal decision-support research, not investment advice or a trade instruction. Never rely on this message alone.",
-    "Keep any liquidation level safely beyond the reference stop; this system does not recommend leverage or calculate liquidation.",
-    "",
-  ];
+  const directionName = (direction: SignalCandidate["direction"]): string => direction === "long" ? "看涨" : "看跌";
+  const familyName = (family: SignalCandidate["family"]): string => ({ trend_breakout: "趋势突破", trend_pullback: "趋势回调", range_mean_reversion: "区间反转" })[family];
+  const lines = ["Sol Alerts 交易机会提醒", "", "请先看价格和风险，再决定是否交易。系统不会自动下单。", ""];
   signals.forEach((signal, index) => {
     const priority = priorityForScore(signal.score.total, config ?? ({ score: { highPriorityMinimum: 80, ordinaryMinimum: 70, historicalRobustnessMax: 30, currentSetupMax: 30, marketStateMatchMax: 25, executionQualityMax: 15 } } as StrategyConfig));
     lines.push(
-      `${index + 1}. ${priority.toUpperCase()} ${signal.symbol} ${signal.direction.toUpperCase()} - ${signal.family}`,
-      `Score ${signal.score.total.toFixed(1)}/100 (history ${signal.score.historicalRobustness.toFixed(1)}, setup ${signal.score.currentSetup.toFixed(1)}, state ${signal.score.marketStateMatch.toFixed(1)}, execution ${signal.score.executionQuality.toFixed(1)})`,
-      `Trigger ${new Date(signal.triggerTime).toISOString()} | current ${formatPrice(signal.currentPrice)} | mark ${formatPrice(signal.markPrice)}`,
-      `Entry ${formatPrice(signal.entryLow)}-${formatPrice(signal.entryHigh)} | chase boundary ${formatPrice(signal.chaseBoundary)}`,
-      `Technical invalidation ${formatPrice(signal.technicalInvalidation)} | reference stop ${formatPrice(signal.referenceStop)} | target ${formatPrice(signal.referenceTarget)}`,
-      `Net R:R ${signal.netRewardRisk.toFixed(2)} | expires ${new Date(signal.expiresAt).toISOString()} | confluence ${signal.confluence}/5`,
-      `Untouched test: ${signal.evidence.untouchedTestTrades} trades, mean R ${signal.evidence.untouchedMeanR.toFixed(3)}, max drawdown ${(signal.evidence.untouchedMaxDrawdown * 100).toFixed(2)}%`,
+      `${index + 1}. ${signal.symbol} · ${directionName(signal.direction)} · ${signal.score.total.toFixed(0)}分${priority === "high" ? "（重点）" : ""}`,
+      `方法：${familyName(signal.family)}`,
+      `当前价格：${formatPrice(signal.currentPrice)}`,
+      `建议关注区间：${formatPrice(signal.entryLow)}～${formatPrice(signal.entryHigh)}`,
+      `最晚追价：${formatPrice(signal.chaseBoundary)}`,
+      `参考止损：${formatPrice(signal.referenceStop)}｜参考止盈：${formatPrice(signal.referenceTarget)}`,
+      `预计收益风险比：${signal.netRewardRisk.toFixed(2)} 倍`,
+      `提醒时间：${new Date(signal.triggerTime).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}`,
+      `有效期至：${new Date(signal.expiresAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}`,
+      `历史参考：${signal.evidence.untouchedTestTrades}次记录，平均每承担1份风险约赚${signal.evidence.untouchedMeanR.toFixed(2)}份，最大回落${(signal.evidence.untouchedMaxDrawdown * 100).toFixed(1)}%`,
       "",
     );
   });
-  lines.push("No account, balance, order, news, social, on-chain, liquidation-map, or price-prediction data is used.");
-  return { subject: `Sol Alerts: ${signals.length} qualified signal${signals.length === 1 ? "" : "s"}`, bodyText: lines.join("\n") };
+  if (scanRunId) lines.push(`记录编号：${scanRunId}`, "");
+  lines.push("重要提示：这只是行情提醒，不是投资建议。请自行判断并控制风险，系统不会自动下单。");
+  return { subject: `【Sol Alerts】发现${signals.length}个交易机会`, bodyText: lines.join("\n") };
 }
 
 function defaultSimulationState(): SimulationState {

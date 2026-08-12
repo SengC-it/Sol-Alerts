@@ -4,7 +4,8 @@
   "functions": {
     "api/scan.ts": { "maxDuration": 60 },
     "api/deliver.ts": { "maxDuration": 30 },
-    "api/health.ts": { "maxDuration": 10 }
+    "api/health.ts": { "maxDuration": 10 },
+    "api/activity.ts": { "maxDuration": 10 }
   },
   "trailingSlash": false
 }

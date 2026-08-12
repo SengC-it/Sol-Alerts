@@ -30,6 +30,21 @@ export class SupabaseRestRepository implements Repository {
     return this.request<T>(`rpc/${name}`, { method: "POST", body: JSON.stringify(payload) });
   }
 
+  async getPublicActivity(limit = 10): Promise<{
+    emails: Array<{ subject: string; status: string; sentAt: string | null; createdAt: string }>;
+    settlements: Array<{ symbol: string; direction: string; entryTime: string; exitTime: string; entryPrice: number; exitPrice: number; resultR: number; exitReason: string }>;
+  }> {
+    const safeLimit = Math.max(1, Math.min(20, Math.floor(limit)));
+    const [emails, settlements] = await Promise.all([
+      this.request<SupabaseRow[]>(`sol_outbox?select=subject,status,delivered_at,created_at&order=created_at.desc&limit=${safeLimit}`),
+      this.request<SupabaseRow[]>(`sol_simulated_trades?select=symbol,direction,entry_time,exit_time,entry_price,exit_price,net_r,exit_reason&shadow_only=eq.false&order=exit_time.desc&limit=${safeLimit}`),
+    ]);
+    return {
+      emails: emails.map((row) => ({ subject: String(row.subject), status: String(row.status), sentAt: row.delivered_at ? String(row.delivered_at) : null, createdAt: String(row.created_at) })),
+      settlements: settlements.map((row) => ({ symbol: String(row.symbol), direction: String(row.direction), entryTime: String(row.entry_time), exitTime: String(row.exit_time), entryPrice: Number(row.entry_price), exitPrice: Number(row.exit_price), resultR: Number(row.net_r), exitReason: String(row.exit_reason) })),
+    };
+  }
+
   async getActiveWeights(): Promise<WeightVersion | null> {
     const rows = await this.request<SupabaseRow[]>("sol_weight_versions?status=eq.champion&order=version.desc&limit=1");
     const row = rows[0];
