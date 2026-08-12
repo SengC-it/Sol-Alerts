@@ -22,15 +22,19 @@ export default async function handler(request: DeliveryRequest, response: Delive
     response.status(405).json({ error: "method_not_allowed" });
     return;
   }
+  let stage = "initialize";
   try {
     const dependencies = makeServerDependencies();
     if (!constantTimeEqual(header(request, "x-cron-secret"), dependencies.environment.cronSecret)) {
       response.status(401).json({ error: "unauthorized" });
       return;
     }
+    stage = "deliver";
     const result = await deliverDueOutbox({ repository: dependencies.repository, mailer: dependencies.mailer, limit: dependencies.environment.outboxBatchSize });
     response.status(200).json({ ok: true, ...result });
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown error";
+    console.error("Sol Alerts delivery failed", { stage, message: message.slice(0, 300) });
     response.status(503).json({ ok: false, error: "delivery_failed_closed" });
   }
 }

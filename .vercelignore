@@ -5,3 +5,6 @@ raw-history/
 python/tests/
 tests/
 node_modules/
+.pytest_cache/
+.git/
+dist/
