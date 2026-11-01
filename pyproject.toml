@@ -13,7 +13,7 @@ authors = [{ name = "Sol Alerts maintainers" }]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest==8.3.5"]
+dev = ["pytest==9.2.0"]
 
 [project.scripts]
 sol-alerts-backtest = "sol_alerts.backtest:main"
